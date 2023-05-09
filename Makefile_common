@@ -1,0 +1,126 @@
+TOP       = rkv_i2c_tb
+TEST     ?= rkv_i2c_quick_reg_access_test
+VERDI    ?= 0
+GUI      ?= 0##gui mode of vcs 
+COV      ?= 1
+FSDB     ?= 1
+PARTCOMP ?= 0
+SEED      = 1 #`date "+%m%d%H%M%S"`
+PERFORMANCE ?= 0
+OUT      ?= out
+ELAB_OPT_PLUS ?= ''
+RUN_OPT_PLUS ?= ''
+VERB     ?= UVM_HIGH#{UVM_NONE, UVM_LOW, UVM_MEDIUM, UVM_HIGH}
+INCDIR   = +incdir+../../rkv_dw_apb_i2c/src \
+					 +incdir+../agents/{lvc_apb3,lvc_i2c} \
+					 +incdir+../{cfg,cov,reg,env,seq_lib} \
+					 +incdir+../seq_lib/{.,elem_seqs,user_elem_seqs,user_virt_seqs} \
+					 +incdir+../tests/{.,user_tests}
+TESTLIST = rkv_i2c_quick_reg_access_test rkv_i2c_master_directed_write_packet_test rkv_i2c_master_directed_read_packet_test rkv_i2c_master_directed_interrupt_test
+#verdi 2015 version 
+#ELAB += -P ${NOVAS_HOME}/share/PLI/VCS/LINUX64/novas_new_dumper.tab ${NOVAS_HOME}/share/PLI/VCS/LINUX64/pli.a
+VCOMP    = vlogan $(INCDIR) -full64 -kdb -lca -sverilog -ntb_opts uvm-1.2 -timescale=1ps/1ps -l $(OUT)/log/comp_$(TOP).log  
+ELAB     = vcs -full64 -sverilog -kdb -lca -ntb_opts uvm-1.2 -debug_acc+all  -debug_region+cell+encrypt -l $(OUT)/log/elab_$(TOP).log -o $(OUT)/obj/rkv_i2c_tb.simv $(ELAB_OPT_PLUS)
+RUN      = $(OUT)/obj/rkv_i2c_tb.simv  +ntb_random_seed=$(SEED) +UVM_NO_RELNOTES +UVM_VERBOSITY=$(VERB) +UVM_VERDI_TRACE=HIER $(RUN_OPT_PLUS)
+#COV_OPTS  = -full64 -userdata ../doc/testcase.data -plan ../doc/vcs_vplan.hvp  -dir $(OUT)/cov.vdb 
+COV_OPTS = -full64 -userdata ../doc/testcase.data -plan ../doc/vcs_vplan.hvp -dir $(CM_DIR)
+CM_DIR  ?= $(OUT)/cov.vdb
+CM_NAME ?= $(TEST)_$(SEED)
+
+ifeq (1, $(strip $(PARTCOMP)))
+  ELAB += -partcomp -fastpartcomp=j4 
+endif
+
+## ---- user can control fsdb generate, FSDB=0 ->> no generate fsdb file ,default FSDB=1 ---
+FSDBFILE = $(OUT)/wave/$(TEST)_$(SEED).fsdb
+
+ifeq ($(FSDB),1)
+	ELAB += -fsdb
+	RUN += +fsdb+dump +fsdbfile+$(FSDBFILE)
+endif
+
+ifeq ($(VERDI),1) #vcs+verdi cosim
+	RUN += -verdi +UVM_VERDI_TRACE=HIER
+endif
+
+ifeq ($(GUI),1) #dve gui
+	RUN += -gui
+endif
+
+ifeq ($(COV),1)
+	ELAB  += -cm line+cond+fsm+tgl+branch+assert -cm_dir $(CM_DIR)
+	RUN += -cm line+cond+fsm+tgl+branch+assert -covg_cont_on_error
+endif
+
+ifeq ($(PERFORMANCE),1)
+	ELAB += -simprofile
+	RUN += -simprofile time
+	RUN += -simprofile_dir_path $(OUT)/preformance
+endif
+export SYNOPSYS_SIM_SETUP = ./synopsys_sim.setup
+
+all: clean dcomp comp elab run
+
+prepare:
+	mkdir -p $(OUT)/work
+	mkdir -p $(OUT)/log
+	mkdir -p $(OUT)/sim
+	mkdir -p $(OUT)/obj
+	mkdir -p $(OUT)/wave
+	mkdir -p $(OUT)/preformance
+	mkdir -p tmp
+
+dcomp: prepare
+	$(VCOMP)  -f rkv_i2c.flist 
+
+comp: tmp/compile_uvm tmp/compile_lvc_apb tmp/compile_lvc_i2c
+	$(VCOMP)  ../env/rkv_i2c_pkg.sv 
+	$(VCOMP)  ../tb/rkv_i2c_if.sv 
+	$(VCOMP)  ../tb/rkv_i2c_tb.sv 
+
+tmp/compile_uvm:
+	${VCOMP} -ntb_opts uvm-1.2
+	@touch $@;
+
+tmp/compile_lvc_apb:
+	$(VCOMP) ../agents/lvc_apb3/lvc_apb_if.sv 
+	$(VCOMP) ../agents/lvc_apb3/lvc_apb_pkg.sv 
+	#@touch $@;
+
+tmp/compile_lvc_i2c:
+	$(VCOMP)  ../agents/lvc_i2c/lvc_i2c_if.sv 
+	$(VCOMP)  ../agents/lvc_i2c/lvc_i2c_pkg.sv 
+	#@touch $@;
+
+elab: comp
+	$(ELAB) $(TOP)
+
+run: 
+	$(RUN) +UVM_TESTNAME=$(TEST) -l $(OUT)/sim/$(CM_NAME).log -cm_dir $(CM_DIR) -cm_name $(CM_NAME)
+
+regr: $(TESTLIST)
+	for t in $(TESTLIST); do \
+		$(RUN) +UVM_TESTNAME=$(TESTLIST) -l $(OUT)/sim/$(TESTLIST).log +vpdfile+$(OUT)/sim/$(TESTLIST)_$(SEED)_$(VPDFILE); \
+	done
+
+mergecov:
+	urg -format both $(COV_OPTS)
+run_verdi:
+	verdi -ssf $(OUT)/wave/*.fsdb -nologo &
+	#verdi -ssf $(FSDBFILE) -nologo &
+
+dvecov:
+	dve $(COV_OPTS)
+
+verdicov:
+	verdi -cov -plan ../doc/vcs_vplan.hvp -covdir $(CM_DIR)
+
+htmlcov:
+	firefox urgReport/dashboard.html
+
+clean:
+	-rm -rf csrc DVEfiles ucli.key uvm_dpi.so vc_hdrs.h  *simv* *.vpd *.log *.sml *.fsdb work.* *.vdb
+	-rm -rf AN.DB urgReport novas.conf verdiLog vdCovLog novas.rc $(OUT) tmp
+	-rm -rf eman* vhdl_objs_dir
+	-rm -rf transcript vsim* regr_ucdb* work rkv_i2c_tb rkv_i2c_tb.vdb
+	-rm -rf profileReport* simprofile_dir
